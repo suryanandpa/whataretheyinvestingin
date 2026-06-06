@@ -8,15 +8,15 @@ export default function Dashboard() {
   useEffect(() => {
     // Hardcoding 127.0.0.1 to bypass Windows IPv6 localhost routing bugs
     Promise.all([
-      fetch('http://127.0.0.1:3001/api/signals').then(r => {
+      fetch('https://whataretheyinvestingin-api.onrender.com/api/signals').then(r => {
         if (!r.ok) throw new Error(`Server returned ${r.status} for signals`);
         return r.json();
       }),
-      fetch('http://127.0.0.1:3001/api/sectors').then(r => {
+      fetch('https://whataretheyinvestingin-api.onrender.com/api/sectors').then(r => {
         if (!r.ok) throw new Error(`Server returned ${r.status} for sectors`);
         return r.json();
       }),
-      fetch('http://127.0.0.1:3001/api/stats').then(r => {
+      fetch('https://whataretheyinvestingin-api.onrender.com/api/stats').then(r => {
         if (!r.ok) throw new Error(`Server returned ${r.status} for stats`);
         return r.json();
       })
