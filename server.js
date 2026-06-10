@@ -2,6 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const cron = require('node-cron');
+const { execFile } = require('child_process');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -12,6 +15,36 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+function runScript(scriptName) {
+  return new Promise((resolve, reject) => {
+    execFile('node', [scriptName], { cwd: path.resolve(__dirname) }, (error, stdout, stderr) => {
+      if (stdout) console.log(stdout);
+      if (stderr) console.error(stderr);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+async function runSync() {
+  try {
+    console.log('📡 Running crawler...');
+    await runScript('crawler.js');
+
+    console.log('💹 Running price fetcher...');
+    await runScript('priceFetcher.js');
+
+    console.log('✅ Sync complete!');
+  } catch (err) {
+    console.error('Sync failed:', err);
+  }
+}
+
 // Allow frontend (React on port 5173 or 3000) to call this API
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -20,6 +53,11 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+app.get('/api/sync', (req, res) => {
+  res.json({ success: true, message: 'Sync started — check logs' });
+  runSync();
+});
 
 // ─── GET /api/signals ─────────────────────────────────────────────────────────
 // Returns all signals with their price events joined
@@ -161,10 +199,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ─── Start server ─────────────────────────────────────────────────────────────
+cron.schedule('0 */6 * * *', () => {
+  runSync();
+});
+
 app.listen(PORT, () => {
   console.log(`\n🚀 Server running at http://localhost:${PORT}`);
+  console.log('⏰ Cron scheduler active — syncing every 6 hours');
   console.log(`\nEndpoints:`);
   console.log(`  GET http://localhost:${PORT}/api/health`);
+  console.log(`  GET http://localhost:${PORT}/api/sync`);
   console.log(`  GET http://localhost:${PORT}/api/stats`);
   console.log(`  GET http://localhost:${PORT}/api/signals`);
   console.log(`  GET http://localhost:${PORT}/api/sectors`);
