@@ -58,6 +58,19 @@ async function setupDatabase() {
     `);
     console.log('✓ tickers table ready');
 
+    // Table 4: sync_runs - scheduler history and status for refresh jobs
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sync_runs (
+        id SERIAL PRIMARY KEY,
+        started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        finished_at TIMESTAMP,
+        status VARCHAR(20) NOT NULL DEFAULT 'running',
+        trigger VARCHAR(50),
+        error TEXT
+      );
+    `);
+    console.log('✓ sync_runs table ready');
+
     console.log('\n✅ Database setup complete!');
   } catch (err) {
     console.error('Database setup error:', err.message);

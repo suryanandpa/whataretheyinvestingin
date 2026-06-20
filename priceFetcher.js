@@ -59,11 +59,14 @@ function findTicker(companyName) {
 async function getStockPrice(ticker, date) {
   try {
     const d = new Date(date);
-    
-    // Clamp date: if older than 2 years or in future, use 1 year ago
+
+    // Future prices are not available yet. Leave them null so a later sync can backfill them.
     const now = new Date();
+    if (d > now) return null;
+
+    // Clamp very old dates to stay inside the free chart API's reliable range.
     const twoYearsAgo = new Date(); twoYearsAgo.setFullYear(now.getFullYear() - 2);
-    if (d < twoYearsAgo || d > now) d.setTime(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    if (d < twoYearsAgo) d.setTime(now.getTime() - 365 * 24 * 60 * 60 * 1000);
 
     const end = new Date(d);
     end.setDate(end.getDate() + 5);
@@ -107,13 +110,26 @@ async function runPriceFetcher() {
 
   const client = await pool.connect();
   const { rows: signals } = await client.query(`
-    SELECT s.id, s.company, s.date, s.sector, s.amount
+    SELECT
+      s.id,
+      s.company,
+      s.date,
+      s.sector,
+      s.amount,
+      p.id AS price_event_id,
+      p.price_before,
+      p.price_1w,
+      p.price_1m
     FROM signals s
     LEFT JOIN price_events p ON p.signal_id = s.id
-    WHERE p.id IS NULL
+    WHERE
+      p.id IS NULL
+      OR p.price_before IS NULL
+      OR (s.date + INTERVAL '7 days' <= CURRENT_DATE AND p.price_1w IS NULL)
+      OR (s.date + INTERVAL '1 month' <= CURRENT_DATE AND p.price_1m IS NULL)
     ORDER BY s.amount DESC
   `);
-  console.log(`Found ${signals.length} signals without price data\n`);
+  console.log(`Found ${signals.length} signals needing price refresh\n`);
   client.release();
 
   let processed = 0;
@@ -152,20 +168,36 @@ async function runPriceFetcher() {
     const weekAfter = new Date(signalDate); weekAfter.setDate(weekAfter.getDate() + 7);
     const monthAfter = new Date(signalDate); monthAfter.setMonth(monthAfter.getMonth() + 1);
 
+    const now = new Date();
     const [priceBefore, price1w, price1m] = await Promise.all([
-      getStockPrice(ticker, dayBefore),
-      getStockPrice(ticker, weekAfter),
-      getStockPrice(ticker, monthAfter),
+      signal.price_before !== null ? Number(signal.price_before) : getStockPrice(ticker, dayBefore),
+      signal.price_1w !== null || weekAfter > now ? Number(signal.price_1w) || null : getStockPrice(ticker, weekAfter),
+      signal.price_1m !== null || monthAfter > now ? Number(signal.price_1m) || null : getStockPrice(ticker, monthAfter),
     ]);
 
     const delta1w = calcDelta(priceBefore, price1w);
     const delta1m = calcDelta(priceBefore, price1m);
 
-    await c.query(
-      `INSERT INTO price_events (signal_id, ticker, price_before, price_1w, price_1m, delta_1w, delta_1m)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [signal.id, ticker, priceBefore, price1w, price1m, delta1w, delta1m]
-    );
+    if (signal.price_event_id) {
+      await c.query(
+        `UPDATE price_events
+         SET ticker = $2,
+             price_before = $3,
+             price_1w = $4,
+             price_1m = $5,
+             delta_1w = $6,
+             delta_1m = $7,
+             fetched_at = NOW()
+         WHERE id = $1`,
+        [signal.price_event_id, ticker, priceBefore, price1w, price1m, delta1w, delta1m]
+      );
+    } else {
+      await c.query(
+        `INSERT INTO price_events (signal_id, ticker, price_before, price_1w, price_1m, delta_1w, delta_1m)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [signal.id, ticker, priceBefore, price1w, price1m, delta1w, delta1m]
+      );
+    }
     c.release();
 
     const millions = Math.round(signal.amount / 100 / 1_000_000);

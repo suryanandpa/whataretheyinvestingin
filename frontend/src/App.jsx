@@ -1,39 +1,49 @@
 import React, { useState, useEffect } from 'react';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://whataretheyinvestingin-api.onrender.com';
+const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 export default function Dashboard() {
-  const [data, setData] = useState({ signals: [], sectors: [], stats: null });
+  const [data, setData] = useState({ signals: [], sectors: [], stats: null, sync: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastPulledAt, setLastPulledAt] = useState(null);
 
   useEffect(() => {
-    // Hardcoding 127.0.0.1 to bypass Windows IPv6 localhost routing bugs
-    Promise.all([
-      fetch('https://whataretheyinvestingin-api.onrender.com/api/signals').then(r => {
-        if (!r.ok) throw new Error(`Server returned ${r.status} for signals`);
-        return r.json();
-      }),
-      fetch('https://whataretheyinvestingin-api.onrender.com/api/sectors').then(r => {
-        if (!r.ok) throw new Error(`Server returned ${r.status} for sectors`);
-        return r.json();
-      }),
-      fetch('https://whataretheyinvestingin-api.onrender.com/api/stats').then(r => {
-        if (!r.ok) throw new Error(`Server returned ${r.status} for stats`);
-        return r.json();
-      })
-    ])
-      .then(([signalsRes, sectorsRes, statsRes]) => {
-        setData({
-          signals: signalsRes.data || [],
-          sectors: sectorsRes.data || [],
-          stats: statsRes.data || null,
+    const fetchJson = async (path, label) => {
+      const response = await fetch(`${API_BASE_URL}${path}`);
+      if (!response.ok) throw new Error(`Server returned ${response.status} for ${label}`);
+      return response.json();
+    };
+
+    const loadDashboard = () => {
+      Promise.all([
+        fetchJson('/api/signals', 'signals'),
+        fetchJson('/api/sectors', 'sectors'),
+        fetchJson('/api/stats', 'stats')
+      ])
+        .then(([signalsRes, sectorsRes, statsRes]) => {
+          setData({
+            signals: signalsRes.data || [],
+            sectors: sectorsRes.data || [],
+            stats: statsRes.data || null,
+            sync: statsRes.sync || signalsRes.sync || null,
+          });
+          setLastPulledAt(new Date());
+          setError(null);
+          setLoading(false);
+        })
+        .catch(err => {
+          console.error("API Fetch Error:", err);
+          setError(err.message === "Failed to fetch" ? "CORS Blocked or Server Down (Check Terminal)" : err.message);
+          setLoading(false);
         });
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("API Fetch Error:", err);
-        setError(err.message === "Failed to fetch" ? "CORS Blocked or Server Down (Check Terminal)" : err.message);
-        setLoading(false);
-      });
+    };
+
+    loadDashboard();
+    const refreshTimer = window.setInterval(loadDashboard, REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(refreshTimer);
   }, []);
   if (loading) {
     return (
@@ -65,6 +75,18 @@ export default function Dashboard() {
     return <span className={color}>{sign}{num}%</span>;
   };
 
+  const formatTimestamp = (value) => {
+    if (!value) return 'Pending';
+    return new Date(value).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  const lastSyncAt = data.sync?.last_sync?.finished_at || lastPulledAt;
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-8 font-sans">
       <div className="max-w-7xl mx-auto space-y-8">
@@ -72,6 +94,10 @@ export default function Dashboard() {
         <header className="border-b border-gray-800 pb-6">
           <h1 className="text-4xl font-black tracking-tight text-white">whataretheyinventingin.in</h1>
           <p className="text-gray-400 mt-2 text-lg">Following the smart money. Trading the signal.</p>
+          <p className="text-gray-500 mt-2 text-sm">
+            Last data pull: {formatTimestamp(lastSyncAt)}
+            {data.sync?.running ? ' - Sync running now' : ''}
+          </p>
         </header>
 
         {data.stats && (
