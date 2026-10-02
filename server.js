@@ -76,12 +76,19 @@ function getNextSyncTime() {
 
 function runScript(scriptName) {
   return new Promise((resolve, reject) => {
-    execFile('node', [scriptName], { cwd: path.resolve(__dirname) }, (error, stdout, stderr) => {
+    const scriptPath = path.join(__dirname, scriptName);
+
+    execFile(process.execPath, [scriptPath], {
+      cwd: __dirname,
+      maxBuffer: 10 * 1024 * 1024,
+    }, (error, stdout, stderr) => {
       if (stdout) console.log(stdout);
       if (stderr) console.error(stderr);
 
       if (error) {
-        reject(error);
+        const details = (stderr || stdout || error.message).trim().slice(-4000);
+        const exitCode = error.code ?? error.signal ?? 'unknown';
+        reject(new Error(`${scriptName} failed (${exitCode}): ${details}`));
         return;
       }
 
@@ -267,10 +274,88 @@ app.get('/api/sync/status', async (req, res) => {
   }
 });
 
+app.get('/api/analytics', async (req, res) => {
+  try {
+    const [monthly, sectors, recipients, summary] = await Promise.all([
+      pool.query(`
+        SELECT DATE_TRUNC('month', date)::date AS month,
+               SUM(amount) / 100.0 AS total_dollars,
+               COUNT(*)::int AS signal_count
+        FROM signals
+        WHERE date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '11 months'
+        GROUP BY DATE_TRUNC('month', date)
+        ORDER BY month
+      `),
+      pool.query(`
+        SELECT sector,
+               COUNT(*)::int AS signal_count,
+               SUM(amount) / 100.0 AS total_dollars
+        FROM signals
+        GROUP BY sector
+        ORDER BY total_dollars DESC
+      `),
+      pool.query(`
+        WITH event_returns AS (
+          SELECT signal_id, AVG(delta_1w) AS delta_1w, AVG(delta_1m) AS delta_1m
+          FROM price_events
+          GROUP BY signal_id
+        )
+        SELECT s.company,
+               MAX(s.ticker) AS ticker,
+               MAX(s.sector) AS sector,
+               COUNT(*)::int AS signal_count,
+               SUM(s.amount) / 100.0 AS total_dollars,
+               AVG(r.delta_1w) AS avg_delta_1w,
+               AVG(r.delta_1m) AS avg_delta_1m,
+               COUNT(r.delta_1m)::int AS priced_1m_count
+        FROM signals s
+        LEFT JOIN event_returns r ON r.signal_id = s.id
+        GROUP BY s.company
+        ORDER BY total_dollars DESC
+        LIMIT 12
+      `),
+      pool.query(`
+        WITH event_returns AS (
+          SELECT signal_id, AVG(delta_1m) AS delta_1m
+          FROM price_events
+          GROUP BY signal_id
+        )
+        SELECT COUNT(*)::int AS total_signals,
+               COALESCE(SUM(s.amount) / 100.0, 0) AS total_dollars,
+               COUNT(DISTINCT s.company)::int AS total_companies,
+               COUNT(r.delta_1m)::int AS priced_1m_count,
+               AVG(r.delta_1m) AS avg_delta_1m,
+               COUNT(*) FILTER (WHERE r.delta_1m > 0)::int AS positive_1m_count
+        FROM signals s
+        LEFT JOIN event_returns r ON r.signal_id = s.id
+      `),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        monthly: monthly.rows,
+        sectors: sectors.rows,
+        recipients: recipients.rows,
+        summary: summary.rows[0],
+      },
+      sync: getSyncState(),
+    });
+  } catch (err) {
+    console.error('[api/analytics] Failed:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Returns all signals with their price events joined.
 app.get('/api/signals', async (req, res) => {
   try {
-    const { sector, type, limit = 50 } = req.query;
+    const { sector, type, q = '' } = req.query;
+    const exportAll = req.query.all === '1';
+    const parsedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Math.min(Math.max(parsedLimit || 25, 1), 100);
+    const parsedOffset = Number.parseInt(req.query.offset, 10);
+    const offset = Math.max(parsedOffset || 0, 0);
 
     const where = [];
     const params = [];
@@ -283,9 +368,15 @@ app.get('/api/signals', async (req, res) => {
       params.push(type);
       where.push(`s.type = $${params.length}`);
     }
+    if (q.trim()) {
+      params.push(`%${q.trim()}%`);
+      where.push(`(s.company ILIKE $${params.length} OR s.ticker ILIKE $${params.length} OR s.agency ILIKE $${params.length} OR s.description ILIKE $${params.length})`);
+    }
 
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-    params.push(parseInt(limit, 10));
+    const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM signals s ${whereClause}`, params);
+    const pageParams = [...params];
+    const pagingClause = exportAll ? '' : `LIMIT $${pageParams.push(limit)} OFFSET $${pageParams.push(offset)}`;
 
     const { rows } = await pool.query(`
       SELECT
@@ -308,10 +399,18 @@ app.get('/api/signals', async (req, res) => {
       LEFT JOIN price_events p ON p.signal_id = s.id
       ${whereClause}
       ORDER BY s.amount DESC
-      LIMIT $${params.length}
-    `, params);
+      ${pagingClause}
+    `, pageParams);
 
-    res.json({ success: true, count: rows.length, data: rows, sync: getSyncState() });
+    res.json({
+      success: true,
+      count: rows.length,
+      total: countResult.rows[0].total,
+      limit: exportAll ? null : limit,
+      offset: exportAll ? null : offset,
+      data: rows,
+      sync: getSyncState(),
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: err.message });

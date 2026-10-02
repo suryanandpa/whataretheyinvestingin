@@ -1,6 +1,8 @@
 # whatretheyinvestingin
 
-## Data refresh
+## Dashboard and data refresh
+
+The dashboard shows federal contract award value by month, sector, and recipient, plus observed stock-price movement after award dates. Use the contract register to search, filter, page through results, open USAspending source records, or export all matching rows as CSV.
 
 The API refreshes data every 6 hours with `node-cron` while `server.js` is running.
 
@@ -25,6 +27,14 @@ Production settings:
 - `SYNC_SECRET`: optional secret for `/api/sync`. When set, call `/api/sync?secret=...` or use `Authorization: Bearer ...`.
 - `SYNC_ON_START=true`: optional startup sync.
 - `VITE_API_BASE_URL`: frontend API base URL. Defaults to `https://whataretheyinvestingin-api.onrender.com`.
+
+Analytics and register endpoints:
+
+- `GET /api/analytics`: monthly award totals, sector totals, top recipients, and summary return coverage.
+- `GET /api/signals`: paginated contract rows. Supports `q`, `sector`, `limit`, and `offset` query parameters.
+- `GET /api/signals?all=1`: all matching contract rows for CSV export; can be combined with `q` and `sector`.
+
+Award amounts are reported award values and may not equal cash disbursed. Post-award share-price changes are descriptive and do not establish that government awards caused a stock move.
 
 For serverless or sleeping hosts, configure an external cron job to call:
 

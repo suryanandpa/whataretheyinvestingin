@@ -52,6 +52,7 @@ async function fetchContracts(page = 1) {
         'Award Date',
         'Description',
         'recipient_id',
+        'generated_internal_id',
       ],
       sort: 'Award Amount',
       order: 'desc',
@@ -77,12 +78,16 @@ async function saveSignal(contract) {
     const description = contract['Description'] || '';
     const date = contract['Award Date'] || new Date().toISOString().split('T')[0];
     const sector = guessSector(company, description);
-    const sourceId = contract['Award ID'] || '';
+    const awardId = contract['Award ID'] || '';
+    const generatedId = contract.generated_internal_id;
+    const sourceUrl = generatedId
+      ? `https://www.usaspending.gov/award/${encodeURIComponent(generatedId)}`
+      : `https://www.usaspending.gov/search/?keywords=${encodeURIComponent(awardId)}`;
 
     // Check if we already stored this one
     const existing = await client.query(
-      'SELECT id FROM signals WHERE source_url = $1',
-      [sourceId]
+      'SELECT id FROM signals WHERE source_url = $1 OR source_url = $2',
+      [sourceUrl, awardId]
     );
     if (existing.rows.length > 0) {
       return null; // skip duplicate
@@ -92,7 +97,7 @@ async function saveSignal(contract) {
       `INSERT INTO signals (date, type, agency, company, amount, sector, description, source_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [date, 'CONTRACT', agency, company, amount, sector, description, sourceId]
+      [date, 'CONTRACT', agency, company, amount, sector, description, sourceUrl]
     );
 
     return result.rows[0].id;
@@ -162,6 +167,7 @@ async function runCrawler() {
     if (err.response) {
       console.error('API response:', err.response.data);
     }
+    process.exitCode = 1;
   } finally {
     await pool.end();
   }
